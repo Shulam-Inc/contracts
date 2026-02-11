@@ -1,0 +1,27 @@
+{
+  "name": "Shulam Contracts",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "JuanBlanco.solidity",
+        "NomicFoundation.hardhat-solidity",
+        "esbenp.prettier-vscode",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "solidity.formatter": "forge"
+      }
+    }
+  },
+  "postCreateCommand": "curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup",
+  "forwardPorts": [8545],
+  "portsAttributes": {
+    "8545": { "label": "Anvil", "onAutoForward": "silent" }
+  }
+}
