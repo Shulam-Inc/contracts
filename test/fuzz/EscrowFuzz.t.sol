@@ -1,128 +1,257 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import "forge-std/Test.sol";
+import "../../src/ShulamEscrow.sol";
+import "../mocks/MockUSDC.sol";
 
-/**
- * @title EscrowFuzzTest
- * @notice Fuzz tests for ShulamEscrow contract
- * @dev Run with: forge test --match-contract EscrowFuzzTest --fuzz-runs 10000
- */
+/// @title EscrowFuzzTest
+/// @notice Fuzz tests for ShulamEscrow contract
+/// @dev Run with: forge test --match-contract EscrowFuzzTest --fuzz-runs 10000
 contract EscrowFuzzTest is Test {
-    
-    // =============================================================
-    //                        SETUP
-    // =============================================================
-    
+    ShulamEscrow escrow;
+    MockUSDC usdc;
+
+    address facilitator = address(0xF);
+    address buyer = address(0xB);
+    address merchant = address(0xC);
+
     function setUp() public {
-        // Deploy contracts here
-        // escrow = new ShulamEscrow(usdc, facilitator);
+        usdc = new MockUSDC();
+        escrow = new ShulamEscrow(address(usdc), facilitator);
     }
-    
-    // =============================================================
-    //                      FUZZ TESTS
-    // =============================================================
-    
-    /**
-     * @notice Fuzz test: deposit should always increase escrow balance
-     * @param amount Random deposit amount (bounded)
-     * @param buyer Random buyer address
-     * @param merchant Random merchant address
-     */
-    function testFuzz_depositIncreasesBalance(
-        uint256 amount,
-        address buyer,
-        address merchant
-    ) public {
-        // Bound inputs to reasonable values
-        amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
-        vm.assume(buyer != address(0));
-        vm.assume(merchant != address(0));
-        vm.assume(buyer != merchant);
-        
-        // TODO: Implement when contract is ready
-        // uint256 balanceBefore = escrow.totalHeld();
-        // escrow.deposit(buyer, merchant, amount, block.timestamp + 7 days);
-        // assertEq(escrow.totalHeld(), balanceBefore + amount);
+
+    // --- Fuzz: deposit with arbitrary amounts ---
+
+    function testFuzz_Deposit_ArbitraryAmount(uint256 amount) public {
+        vm.assume(amount > 0);
+        vm.assume(amount <= type(uint128).max);
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked(amount));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, 0);
+
+        ShulamEscrow.Escrow memory e = escrow.getEscrow(id);
+        assertEq(e.amount, amount);
+        assertEq(e.buyer, buyer);
+        assertEq(e.merchant, merchant);
+        assertTrue(e.status == ShulamEscrow.Status.Held);
+        assertEq(escrow.totalEscrowed(), amount);
     }
-    
-    /**
-     * @notice Fuzz test: release should transfer correct amount minus fee
-     * @param amount Random escrow amount
-     * @param feeRate Random fee rate (bounded to max 5%)
-     */
-    function testFuzz_releaseTransfersCorrectAmount(
-        uint256 amount,
-        uint256 feeRate
-    ) public {
-        amount = bound(amount, 1e6, 1_000_000e6);
-        feeRate = bound(feeRate, 0, 500); // 0% to 5% (in basis points)
-        
-        // TODO: Implement when contract is ready
-        // uint256 expectedFee = (amount * feeRate) / 10000;
-        // uint256 expectedPayout = amount - expectedFee;
+
+    // --- Fuzz: deposit then release preserves accounting ---
+
+    function testFuzz_DepositThenRelease(uint256 amount) public {
+        vm.assume(amount > 0);
+        vm.assume(amount <= type(uint128).max);
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked("release", amount));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, 0);
+
+        vm.prank(facilitator);
+        escrow.release(id);
+
+        assertEq(escrow.totalEscrowed(), 0);
+        assertEq(usdc.balanceOf(merchant), amount);
+        assertTrue(escrow.getEscrow(id).status == ShulamEscrow.Status.Released);
     }
-    
-    /**
-     * @notice Fuzz test: refund should return full amount to buyer
-     * @param amount Random escrow amount
-     */
-    function testFuzz_refundReturnsFullAmount(uint256 amount) public {
-        amount = bound(amount, 1e6, 1_000_000e6);
-        
-        // TODO: Implement when contract is ready
+
+    // --- Fuzz: deposit then refund preserves accounting ---
+
+    function testFuzz_DepositThenRefund(uint256 amount) public {
+        vm.assume(amount > 0);
+        vm.assume(amount <= type(uint128).max);
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked("refund", amount));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, 0);
+
+        vm.prank(facilitator);
+        escrow.refund(id);
+
+        assertEq(escrow.totalEscrowed(), 0);
+        assertEq(usdc.balanceOf(buyer), amount);
+        assertTrue(escrow.getEscrow(id).status == ShulamEscrow.Status.Refunded);
     }
-    
-    /**
-     * @notice Fuzz test: cannot release after refund
-     * @param amount Random escrow amount
-     */
-    function testFuzz_cannotReleaseAfterRefund(uint256 amount) public {
-        amount = bound(amount, 1e6, 1_000_000e6);
-        
-        // TODO: Implement when contract is ready
-        // vm.expectRevert("Escrow already resolved");
+
+    // --- Fuzz: unauthorized callers always revert ---
+
+    function testFuzz_Deposit_Unauthorized(address caller) public {
+        vm.assume(caller != facilitator);
+
+        usdc.mint(address(escrow), 100e6);
+        bytes32 id = keccak256(abi.encodePacked("unauth", caller));
+
+        vm.prank(caller);
+        vm.expectRevert(ShulamEscrow.Unauthorized.selector);
+        escrow.deposit(id, buyer, merchant, 100e6, 0);
     }
-    
-    /**
-     * @notice Fuzz test: cannot release before validAfter
-     * @param amount Random escrow amount
-     * @param releaseTime Random future time
-     */
-    function testFuzz_cannotReleaseTooEarly(
-        uint256 amount,
-        uint256 releaseTime
-    ) public {
-        amount = bound(amount, 1e6, 1_000_000e6);
+
+    function testFuzz_Refund_Unauthorized(address caller) public {
+        vm.assume(caller != facilitator);
+
+        usdc.mint(address(escrow), 100e6);
+        bytes32 id = keccak256("refund-unauth");
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, 100e6, 0);
+
+        vm.prank(caller);
+        vm.expectRevert(ShulamEscrow.Unauthorized.selector);
+        escrow.refund(id);
+    }
+
+    function testFuzz_Release_Unauthorized(address caller) public {
+        vm.assume(caller != facilitator);
+        vm.assume(caller != merchant);
+
+        usdc.mint(address(escrow), 100e6);
+        bytes32 id = keccak256("release-unauth");
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, 100e6, 0);
+
+        vm.prank(caller);
+        vm.expectRevert(ShulamEscrow.Unauthorized.selector);
+        escrow.release(id);
+    }
+
+    // --- Fuzz: unique escrowIds never collide ---
+
+    function testFuzz_UniqueIds(uint256 salt1, uint256 salt2) public {
+        vm.assume(salt1 != salt2);
+
+        bytes32 id1 = keccak256(abi.encodePacked(salt1));
+        bytes32 id2 = keccak256(abi.encodePacked(salt2));
+
+        usdc.mint(address(escrow), 200e6);
+
+        vm.startPrank(facilitator);
+        escrow.deposit(id1, buyer, merchant, 100e6, 0);
+        escrow.deposit(id2, buyer, merchant, 100e6, 0);
+        vm.stopPrank();
+
+        assertEq(escrow.totalEscrowed(), 200e6);
+
+        vm.prank(facilitator);
+        escrow.release(id1);
+
+        vm.prank(facilitator);
+        escrow.refund(id2);
+
+        assertEq(escrow.totalEscrowed(), 0);
+        assertTrue(escrow.getEscrow(id1).status == ShulamEscrow.Status.Released);
+        assertTrue(escrow.getEscrow(id2).status == ShulamEscrow.Status.Refunded);
+    }
+
+    // --- Fuzz: merchant can release their own escrow ---
+
+    function testFuzz_Release_ByMerchant(address merchantAddr) public {
+        vm.assume(merchantAddr != address(0));
+        vm.assume(merchantAddr != address(escrow));
+        vm.assume(merchantAddr != buyer);
+
+        usdc.mint(address(escrow), 50e6);
+        bytes32 id = keccak256(abi.encodePacked("merchant-release", merchantAddr));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchantAddr, 50e6, 0);
+
+        vm.prank(merchantAddr);
+        escrow.release(id);
+
+        assertTrue(escrow.getEscrow(id).status == ShulamEscrow.Status.Released);
+        assertEq(usdc.balanceOf(merchantAddr), 50e6);
+    }
+
+    // --- Fuzz: double-settle always reverts ---
+
+    function testFuzz_DoubleRelease_Reverts(uint256 amount) public {
+        vm.assume(amount > 0 && amount <= type(uint128).max);
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked("double-release", amount));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, 0);
+
+        vm.prank(facilitator);
+        escrow.release(id);
+
+        vm.prank(facilitator);
+        vm.expectRevert(ShulamEscrow.EscrowAlreadySettled.selector);
+        escrow.release(id);
+    }
+
+    function testFuzz_RefundAfterRelease_Reverts(uint256 amount) public {
+        vm.assume(amount > 0 && amount <= type(uint128).max);
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked("refund-after-release", amount));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, 0);
+
+        vm.prank(facilitator);
+        escrow.release(id);
+
+        vm.prank(facilitator);
+        vm.expectRevert(ShulamEscrow.EscrowAlreadySettled.selector);
+        escrow.refund(id);
+    }
+
+    // --- Fuzz: time-locked release ---
+
+    function testFuzz_CannotReleaseTooEarly(uint256 amount, uint256 releaseTime) public {
+        vm.assume(amount > 0 && amount <= type(uint128).max);
         releaseTime = bound(releaseTime, block.timestamp + 1 hours, block.timestamp + 365 days);
-        
-        // TODO: Implement when contract is ready
+
+        usdc.mint(address(escrow), amount);
+        bytes32 id = keccak256(abi.encodePacked("timelock", amount, releaseTime));
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, amount, releaseTime);
+
+        vm.prank(facilitator);
+        vm.expectRevert(ShulamEscrow.ReleaseTooEarly.selector);
+        escrow.release(id);
+
+        // Warp to release time — now it should succeed
+        vm.warp(releaseTime);
+        vm.prank(facilitator);
+        escrow.release(id);
+
+        assertTrue(escrow.getEscrow(id).status == ShulamEscrow.Status.Released);
     }
-    
-    // =============================================================
-    //                    EDGE CASE TESTS
-    // =============================================================
-    
-    /**
-     * @notice Test minimum deposit (1 wei of USDC = 0.000001 USDC)
-     */
-    function test_minimumDeposit() public {
-        // TODO: Implement
+
+    // --- Edge cases ---
+
+    function test_MinimumDeposit() public {
+        usdc.mint(address(escrow), 1);
+        bytes32 id = keccak256("min-deposit");
+
+        vm.prank(facilitator);
+        escrow.deposit(id, buyer, merchant, 1, 0);
+
+        assertEq(escrow.getEscrow(id).amount, 1);
     }
-    
-    /**
-     * @notice Test maximum deposit (type(uint256).max)
-     */
-    function test_maximumDeposit() public {
-        // TODO: Implement - should handle or revert gracefully
-    }
-    
-    /**
-     * @notice Test zero address handling
-     */
-    function test_zeroAddressReverts() public {
-        // TODO: Implement
-        // vm.expectRevert("Invalid buyer");
-        // vm.expectRevert("Invalid merchant");
+
+    function test_ZeroAddressReverts() public {
+        usdc.mint(address(escrow), 100e6);
+
+        vm.prank(facilitator);
+        vm.expectRevert(ShulamEscrow.InvalidAddress.selector);
+        escrow.deposit(keccak256("zero-buyer"), address(0), merchant, 100e6, 0);
+
+        vm.prank(facilitator);
+        vm.expectRevert(ShulamEscrow.InvalidAddress.selector);
+        escrow.deposit(keccak256("zero-merchant"), buyer, address(0), 100e6, 0);
     }
 }
